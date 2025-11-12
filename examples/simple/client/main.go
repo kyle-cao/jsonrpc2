@@ -1,8 +1,8 @@
 package main
 
 import (
-	"log"
 	"github.com/kyle-cao/jsonrpc2"
+	"log"
 )
 
 // ArithParamsWithToken 匹配服务端的参数结构
@@ -27,7 +27,7 @@ func main() {
 		B:     5,
 		Token: "secret-token",
 	}
-	err = client.Call("Arith.Add", addParamsSuccess, &addReply)
+	err = client.Call("Arith.Add", addParamsSuccess, &addReply, 5)
 	if err != nil {
 		log.Printf("FAILURE: Arith.Add failed unexpectedly: %v", err)
 	} else {

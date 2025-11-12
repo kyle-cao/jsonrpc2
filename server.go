@@ -3,6 +3,7 @@ package jsonrpc2
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log"
 	"net"
@@ -12,7 +13,10 @@ import (
 )
 
 type Server struct {
-	router *router
+	router   *router
+	mu       sync.Mutex // 保护 listener 字段
+	listener net.Listener
+	wg       sync.WaitGroup // 用于追踪活动的连接处理 goroutine
 }
 
 func NewServer() *Server {
@@ -30,23 +34,70 @@ func (s *Server) Listen(addr string) error {
 	if err != nil {
 		return err
 	}
-	defer listener.Close()
 
+	s.mu.Lock()
+	s.listener = listener
+	s.mu.Unlock()
+
+	// 启动一个 goroutine 来接受新的连接。
+	go s.acceptLoop()
+	return nil
+}
+
+// acceptLoop 是一个内部循环，用于接受新连接。
+func (s *Server) acceptLoop() {
 	for {
-		conn, err := listener.Accept()
+		conn, err := s.listener.Accept()
 		if err != nil {
+			if errors.Is(err, net.ErrClosed) {
+				log.Println("jsonrpc2: listener closed, shutting down accept loop.")
+				return
+			}
 			log.Printf("jsonrpc2: failed to accept connection: %v", err)
 			continue
 		}
+
+		// 为每个新连接增加 WaitGroup 计数器
+		s.wg.Add(1)
 		go s.handleConnection(conn)
 	}
 }
 
+func (s *Server) Close(ctx context.Context) error {
+	s.mu.Lock()
+	listener := s.listener
+	s.mu.Unlock()
+
+	if listener == nil {
+		return errors.New("jsonrpc2: server not started")
+	}
+
+	err := listener.Close()
+
+	done := make(chan struct{})
+	go func() {
+		s.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		log.Println("jsonrpc2: all connections closed gracefully.")
+		return err
+	case <-ctx.Done():
+		log.Println("jsonrpc2: shutdown timed out, active connections may be interrupted.")
+		return ctx.Err()
+	}
+}
+
 func (s *Server) handleConnection(conn net.Conn) {
+	defer s.wg.Done()
 	defer conn.Close()
+
 	decoder := json.NewDecoder(conn)
 	encoder := json.NewEncoder(conn)
 	var sendMutex sync.Mutex
+
 	for {
 		var req protocol.Request
 		if err := decoder.Decode(&req); err != nil {
@@ -55,7 +106,11 @@ func (s *Server) handleConnection(conn net.Conn) {
 			}
 			return
 		}
-		go s.handleRequest(encoder, &sendMutex, conn, &req)
+		s.wg.Add(1)
+		go func() {
+			defer s.wg.Done()
+			s.handleRequest(encoder, &sendMutex, conn, &req)
+		}()
 	}
 }
 
@@ -87,17 +142,22 @@ func (s *Server) handleRequest(encoder *json.Encoder, sendMutex *sync.Mutex, con
 func (s *Server) writeResponse(encoder *json.Encoder, m *sync.Mutex, id interface{}, data interface{}) {
 	m.Lock()
 	defer m.Unlock()
+	if err := encoder.Encode(createResponse(id, data)); err != nil {
+		log.Printf("jrpc: failed to write response: %v", err)
+	}
+}
 
-	var resp protocol.Response
-	resp.Jsonrpc = "2.0"
-	resp.ID = id
+// createResponse 是一个辅助函数，用于构建响应对象
+func createResponse(id interface{}, data interface{}) protocol.Response {
+	resp := protocol.Response{
+		Jsonrpc: "2.0",
+		ID:      id,
+	}
 	switch val := data.(type) {
 	case *protocol.ErrorObject:
 		resp.Error = val
 	default:
 		resp.Result = val
 	}
-	if err := encoder.Encode(&resp); err != nil {
-		log.Printf("jsonrpc2: failed to write response: %v", err)
-	}
+	return resp
 }

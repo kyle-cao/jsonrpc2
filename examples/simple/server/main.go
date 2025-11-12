@@ -1,7 +1,11 @@
 package main
 
 import (
+	"context"
 	"log"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/kyle-cao/jsonrpc2"
@@ -85,7 +89,26 @@ func main() {
 	server.Handle("Arith.Ping", LoggingMiddleware, arith.Ping)
 
 	log.Println("Starting jrpc server on :8080")
-	if err := server.ListenAndServe(":8080"); err != nil {
+	if err := server.Listen(":8080"); err != nil {
 		log.Fatal("Server error:", err)
 	}
+	// 2. 设置信号监听，用于捕获 Ctrl+C 等中断信号
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+
+	// 阻塞 main goroutine，直到收到一个信号
+	<-quit
+	log.Println("Shutdown signal received, starting graceful shutdown...")
+
+	// 3. 创建一个带有超时的上下文，用于 Shutdown 方法
+	// 我们给服务器 5 秒钟的时间来处理完剩余的请求
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// 4. 调用 Shutdown 方法
+	if err := server.Close(ctx); err != nil {
+		log.Fatalf("Server shutdown failed: %v", err)
+	}
+	log.Println("Server gracefully stopped")
+
 }
