@@ -39,12 +39,10 @@ func (s *Server) Listen(addr string) error {
 	s.listener = listener
 	s.mu.Unlock()
 
-	// 启动一个 goroutine 来接受新的连接。
 	go s.acceptLoop()
 	return nil
 }
 
-// acceptLoop 是一个内部循环，用于接受新连接。
 func (s *Server) acceptLoop() {
 	for {
 		conn, err := s.listener.Accept()
@@ -56,8 +54,6 @@ func (s *Server) acceptLoop() {
 			log.Printf("jsonrpc2: failed to accept connection: %v", err)
 			continue
 		}
-
-		// 为每个新连接增加 WaitGroup 计数器
 		s.wg.Add(1)
 		go s.handleConnection(conn)
 	}
@@ -143,7 +139,7 @@ func (s *Server) writeResponse(encoder *json.Encoder, m *sync.Mutex, id interfac
 	m.Lock()
 	defer m.Unlock()
 	if err := encoder.Encode(createResponse(id, data)); err != nil {
-		log.Printf("jrpc: failed to write response: %v", err)
+		log.Printf("jsonrpc2: failed to write response: %v", err)
 	}
 }
 
