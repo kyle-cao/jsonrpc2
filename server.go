@@ -78,10 +78,8 @@ func (s *Server) Close(ctx context.Context) error {
 
 	select {
 	case <-done:
-		log.Println("jsonrpc2: all connections closed gracefully.")
 		return err
 	case <-ctx.Done():
-		log.Println("jsonrpc2: shutdown timed out, active connections may be interrupted.")
 		return ctx.Err()
 	}
 }

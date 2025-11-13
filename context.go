@@ -31,8 +31,14 @@ func (c *Context) Next() {
 	}
 }
 
+// GetResponseError 获取由处理器设置的错误响应。
 func (c *Context) GetResponseError() *protocol.ErrorObject {
 	return c.responseError
+}
+
+// GetResponseResult 返回由处理器设置的成功响应结果。
+func (c *Context) GetResponseResult() interface{} {
+	return c.responseResult
 }
 
 // Bind 将请求的 Params 解析到指定的结构体指针中。
