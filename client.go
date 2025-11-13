@@ -61,7 +61,7 @@ func (c *Client) receiveLoop() {
 		}
 		idKey, errKey := idToKey(res.ID)
 		if errKey != nil {
-			log.Printf("jrpc: unexpected response ID type: %T, value: %v", res.ID, res.ID)
+			log.Printf("jsonrpc2: unexpected response ID type: %T, value: %v", res.ID, res.ID)
 			continue
 		}
 
@@ -107,14 +107,14 @@ func (c *Client) Close() error {
 }
 
 // Call 发起一个同步调用，使用内部自增 ID。
-func (c *Client) Call(method string, args, reply interface{}) error {
+func (c *Client) Call(method string, args, reply interface{}, timeout time.Duration) error {
 	c.mutex.Lock()
 	c.seq++
 	seqID := c.seq
 	c.mutex.Unlock()
 
 	// 调用新的底层 CallWithID 方法
-	return c.CallWithID(seqID, method, args, reply)
+	return c.CallWithID(seqID, method, args, reply, timeout)
 }
 
 // Go 发起一个异步调用，使用内部自增 ID。
@@ -129,13 +129,17 @@ func (c *Client) Go(method string, args, reply interface{}, done chan *Call) *Ca
 }
 
 // CallWithID 发起一个同步调用，允许用户指定请求 ID。
-func (c *Client) CallWithID(id interface{}, method string, args, reply interface{}) error {
+func (c *Client) CallWithID(id interface{}, method string, args, reply interface{}, timeout time.Duration) error {
+	// 默认超时时间
+	if timeout == 0 {
+		timeout = 5 * time.Second
+	}
 	call := c.GoWithID(id, method, args, reply, make(chan *Call, 1))
 	select {
 	case <-call.Done:
 		return call.Error
-	case <-time.After(5 * time.Second): // 5秒超时
-		return errors.New("jrpc: call timeout")
+	case <-time.After(timeout):
+		return errors.New("jsonrpc2: call timeout")
 	}
 }
 
@@ -158,7 +162,7 @@ func (c *Client) GoWithID(id interface{}, method string, args, reply interface{}
 // send 是一个底层的发送函数，处理所有类型的 ID。
 func (c *Client) send(id interface{}, call *Call) {
 	if id == nil {
-		call.Error = errors.New("jrpc: request id cannot be null for a call that expects a reply")
+		call.Error = errors.New("jsonrpc2: request id cannot be null for a call that expects a reply")
 		call.Done <- call
 		return
 	}
@@ -214,6 +218,6 @@ func idToKey(id interface{}) (string, error) {
 	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
 		return fmt.Sprintf("N:%d", v), nil
 	default:
-		return "", fmt.Errorf("jrpc: unsupported id type '%T' for map key", v)
+		return "", fmt.Errorf("jsonrpc2: unsupported id type '%T' for map key", v)
 	}
 }
