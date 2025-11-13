@@ -3,6 +3,7 @@ package jsonrpc2
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net"
 	"sync"
@@ -21,16 +22,18 @@ type Call struct {
 }
 
 type Client struct {
-	conn      net.Conn
-	encoder   *json.Encoder
-	sendMutex sync.Mutex // 保护发送
-	mutex     sync.Mutex // 保护 Client 内部状态
+	conn    net.Conn
+	encoder *json.Encoder
+
+	sendMutex sync.Mutex // 保护对 conn 的写入
+	mutex     sync.Mutex // 保护 Client 内部状态 (seq, pending, closing, shutdown)
 	seq       uint64
-	pending   map[uint64]*Call
+	pending   map[string]*Call
 	closing   bool
 	shutdown  bool
 }
 
+// Dial 连接到指定的 RPC 服务器。
 func Dial(addr string) (*Client, error) {
 	conn, err := net.Dial("tcp", addr)
 	if err != nil {
@@ -39,12 +42,13 @@ func Dial(addr string) (*Client, error) {
 	client := &Client{
 		conn:    conn,
 		encoder: json.NewEncoder(conn),
-		pending: make(map[uint64]*Call),
+		pending: make(map[string]*Call),
 	}
 	go client.receiveLoop()
 	return client, nil
 }
 
+// receiveLoop 循环接收服务端的响应。
 func (c *Client) receiveLoop() {
 	var err error
 	var res protocol.Response
@@ -55,16 +59,15 @@ func (c *Client) receiveLoop() {
 		if err != nil {
 			break
 		}
-
-		seq, ok := res.ID.(float64) // JSON 数字默认为 float64
-		if !ok {
-			log.Printf("jsonrpc2: unexpected response ID type: %T", res.ID)
+		idKey, errKey := idToKey(res.ID)
+		if errKey != nil {
+			log.Printf("jrpc: unexpected response ID type: %T, value: %v", res.ID, res.ID)
 			continue
 		}
 
 		c.mutex.Lock()
-		call := c.pending[uint64(seq)]
-		delete(c.pending, uint64(seq))
+		call := c.pending[idKey]
+		delete(c.pending, idKey)
 		c.mutex.Unlock()
 
 		if call != nil {
@@ -72,7 +75,6 @@ func (c *Client) receiveLoop() {
 				call.Error = res.Error
 			} else {
 				if call.Reply != nil {
-					// 将结果 unmarshal 到 call.Reply 指针中
 					jsonData, _ := json.Marshal(res.Result)
 					call.Error = json.Unmarshal(jsonData, call.Reply)
 				}
@@ -84,13 +86,15 @@ func (c *Client) receiveLoop() {
 	// 发生错误，终止所有挂起的调用
 	c.mutex.Lock()
 	c.shutdown = true
-	for _, call := range c.pending {
+	for key, call := range c.pending {
 		call.Error = err
 		call.Done <- call
+		delete(c.pending, key)
 	}
 	c.mutex.Unlock()
 }
 
+// Close 关闭客户端连接。
 func (c *Client) Close() error {
 	c.mutex.Lock()
 	if c.closing {
@@ -102,37 +106,63 @@ func (c *Client) Close() error {
 	return c.conn.Close()
 }
 
-// Go 发起一个异步调用。
+// Call 发起一个同步调用，使用内部自增 ID。
+func (c *Client) Call(method string, args, reply interface{}) error {
+	c.mutex.Lock()
+	c.seq++
+	seqID := c.seq
+	c.mutex.Unlock()
+
+	// 调用新的底层 CallWithID 方法
+	return c.CallWithID(seqID, method, args, reply)
+}
+
+// Go 发起一个异步调用，使用内部自增 ID。
 func (c *Client) Go(method string, args, reply interface{}, done chan *Call) *Call {
+	c.mutex.Lock()
+	c.seq++
+	seqID := c.seq
+	c.mutex.Unlock()
+
+	// 调用新的底层 GoWithID 方法
+	return c.GoWithID(seqID, method, args, reply, done)
+}
+
+// CallWithID 发起一个同步调用，允许用户指定请求 ID。
+func (c *Client) CallWithID(id interface{}, method string, args, reply interface{}) error {
+	call := c.GoWithID(id, method, args, reply, make(chan *Call, 1))
+	select {
+	case <-call.Done:
+		return call.Error
+	case <-time.After(5 * time.Second): // 5秒超时
+		return errors.New("jrpc: call timeout")
+	}
+}
+
+// GoWithID 发起一个异步调用，允许用户指定请求 ID。
+func (c *Client) GoWithID(id interface{}, method string, args, reply interface{}, done chan *Call) *Call {
+	if done == nil {
+		done = make(chan *Call, 10) // 缓冲以避免阻塞
+	}
 	call := &Call{
 		Method: method,
 		Args:   args,
 		Reply:  reply,
+		Done:   done,
 	}
-	if done == nil {
-		done = make(chan *Call, 10) // 缓冲以避免阻塞
-	}
-	call.Done = done
 
-	c.send(call)
+	c.send(id, call)
 	return call
 }
 
-// Call 发起一个同步调用。
-func (c *Client) Call(method string, args, reply interface{}, timeout time.Duration) error {
-	// 设置超时
-	if timeout == 0 {
-		timeout = 5
+// send 是一个底层的发送函数，处理所有类型的 ID。
+func (c *Client) send(id interface{}, call *Call) {
+	if id == nil {
+		call.Error = errors.New("jrpc: request id cannot be null for a call that expects a reply")
+		call.Done <- call
+		return
 	}
-	select {
-	case call := <-c.Go(method, args, reply, make(chan *Call, 1)).Done:
-		return call.Error
-	case <-time.After(timeout * time.Second): // 5秒超时
-		return errors.New("jsonrpc2: call timeout")
-	}
-}
 
-func (c *Client) send(call *Call) {
 	c.mutex.Lock()
 	if c.shutdown || c.closing {
 		c.mutex.Unlock()
@@ -140,9 +170,15 @@ func (c *Client) send(call *Call) {
 		call.Done <- call
 		return
 	}
-	c.seq++
-	seqID := c.seq
-	c.pending[seqID] = call
+
+	idKey, err := idToKey(id)
+	if err != nil {
+		c.mutex.Unlock()
+		call.Error = err
+		call.Done <- call
+		return
+	}
+	c.pending[idKey] = call
 	c.mutex.Unlock()
 
 	params, _ := json.Marshal(call.Args)
@@ -150,21 +186,34 @@ func (c *Client) send(call *Call) {
 		Jsonrpc: "2.0",
 		Method:  call.Method,
 		Params:  params,
-		ID:      seqID,
+		ID:      id, // 使用传入的 ID
 	}
 
 	c.sendMutex.Lock()
-	err := c.encoder.Encode(req)
+	err = c.encoder.Encode(req)
 	c.sendMutex.Unlock()
 
 	if err != nil {
 		c.mutex.Lock()
-		call = c.pending[seqID]
-		delete(c.pending, seqID)
-		c.mutex.Unlock()
-		if call != nil {
-			call.Error = err
-			call.Done <- call
+		// 确保我们删除的是同一个 call
+		if c.pending[idKey] == call {
+			delete(c.pending, idKey)
 		}
+		c.mutex.Unlock()
+
+		call.Error = err
+		call.Done <- call
+	}
+}
+
+// idToKey 辅助函数，将各种 ID 类型转换为唯一的字符串 key，用于 map。
+func idToKey(id interface{}) (string, error) {
+	switch v := id.(type) {
+	case string:
+		return v, nil
+	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
+		return fmt.Sprintf("N:%d", v), nil
+	default:
+		return "", fmt.Errorf("jrpc: unsupported id type '%T' for map key", v)
 	}
 }

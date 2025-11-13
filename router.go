@@ -2,7 +2,7 @@ package jsonrpc2
 
 import "sync"
 
-// handlerEntry 现在直接存储处理器链
+// handlerEntry 直接存储处理器链
 type handlerEntry struct {
 	chain []HandlerFunc
 }
