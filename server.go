@@ -13,16 +13,26 @@ import (
 )
 
 type Server struct {
-	router   *router
-	mu       sync.Mutex // 保护 listener 字段
-	listener net.Listener
-	wg       sync.WaitGroup // 用于追踪活动的连接处理 goroutine
+	router            *router
+	mu                sync.Mutex // 保护 listener 字段
+	listener          net.Listener
+	wg                sync.WaitGroup // 用于追踪活动的连接处理 goroutine
+	globalMiddlewares []HandlerFunc  // 新增：用于存储全局中间件
 }
 
 func NewServer() *Server {
 	return &Server{
-		router: newRouter(),
+		router:            newRouter(),
+		globalMiddlewares: make([]HandlerFunc, 0), // 初始化
 	}
+}
+
+// Use 添加一个或多个全局中间件到服务器。
+// 这些中间件将应用于所有已注册的处理器，并在特定于路由的中间件之前执行。
+func (s *Server) Use(middlewares ...HandlerFunc) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.globalMiddlewares = append(s.globalMiddlewares, middlewares...)
 }
 
 func (s *Server) Handle(method string, handlers ...HandlerFunc) {
@@ -118,11 +128,20 @@ func (s *Server) handleRequest(encoder *json.Encoder, sendMutex *sync.Mutex, con
 		s.writeResponse(encoder, sendMutex, req.ID, protocol.MethodNotFoundError(req.Method))
 		return
 	}
+
+	s.mu.Lock()
+	finalChain := make([]HandlerFunc, 0, len(s.globalMiddlewares)+len(entry.chain))
+	// 1. 添加全局中间件
+	finalChain = append(finalChain, s.globalMiddlewares...)
+	s.mu.Unlock()
+	// 2. 添加特定于路由的中间件和处理器
+	finalChain = append(finalChain, entry.chain...)
+
 	ctx := &Context{
 		Context:      context.Background(),
 		Conn:         conn,
 		Request:      req,
-		handlerChain: entry.chain,
+		handlerChain: finalChain,
 		handlerIdx:   -1,
 	}
 	ctx.Next()

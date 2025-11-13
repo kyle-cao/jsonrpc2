@@ -80,6 +80,9 @@ func main() {
 	server := jsonrpc2.NewServer()
 	arith := &Arith{}
 
+	// 注册全局中间件
+	// server.Use(dbLogger)
+
 	// 正确的注册方式：
 	// 将中间件和最终处理器按执行顺序列出。
 	// 请求会先经过 LoggingMiddleware，然后是 AuthMiddleware，最后到达 arith.Add。
