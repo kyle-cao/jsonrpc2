@@ -21,10 +21,12 @@ type Server struct {
 }
 
 func NewServer() *Server {
-	return &Server{
+	s := &Server{
 		router:            newRouter(),
-		globalMiddlewares: make([]HandlerFunc, 0), // 初始化
+		globalMiddlewares: make([]HandlerFunc, 0),
 	}
+
+	return s
 }
 
 // Use 添加一个或多个全局中间件到服务器。
@@ -48,6 +50,10 @@ func (s *Server) Listen(addr string) error {
 	s.mu.Lock()
 	s.listener = listener
 	s.mu.Unlock()
+
+	s.Handle("ping", func(ctx *Context) {
+		ctx.Result("pong")
+	})
 
 	go s.acceptLoop()
 	return nil
@@ -119,6 +125,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 }
 
 func (s *Server) handleRequest(encoder *json.Encoder, sendMutex *sync.Mutex, conn net.Conn, req *protocol.Request) {
+
 	if req.ID == nil {
 		s.writeResponse(encoder, sendMutex, nil, protocol.ParseError(req.ID))
 		return

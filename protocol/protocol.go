@@ -7,7 +7,7 @@ type Request struct {
 	Jsonrpc string          `json:"jsonrpc"`
 	Method  string          `json:"method"`
 	Params  json.RawMessage `json:"params"`
-	ID      interface{}     `json:"id"` // 使用 interface{} 以支持 string, number, or null
+	ID      interface{}     `json:"id"`
 }
 
 // Response 代表一个 JSON-RPC 2.0 响应对象

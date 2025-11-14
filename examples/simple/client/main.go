@@ -21,42 +21,38 @@ func main() {
 	}
 	defer client.Close()
 
-	// --- 1. 使用默认的自增 ID (简单模式) ---
-	log.Println("\n--- 1. Calling Arith.Ping with auto-incrementing ID ---")
-	var pingReply string
-	// 使用简单的 Call 方法，ID 会自动生成
-	err = client.Call("Arith.Ping", nil, &pingReply)
-	if err != nil {
-		log.Printf("Arith.Ping error: %v", err)
-	} else {
-		log.Printf("Arith.Ping reply: %s", pingReply)
-	}
-
-	// --- 2. 使用自定义的字符串 ID (高级模式) ---
-	log.Println("\n--- 2. Calling Arith.Add with custom UUID ID ---")
 	addParams := &ArithParamsWithToken{
 		A:     10,
 		B:     5,
 		Token: "secret-token",
 	}
 	var addReply int
+
+	// --- 1. 使用默认的自增 ID (简单模式) ---
+	err = client.Call("Arith.Add", addParams, &addReply, 5)
+	if err != nil {
+		log.Printf("FAILURE: Arith.Add failed: %v", err)
+	} else {
+		log.Printf("SUCCESS: Arith.Add reply: %d", addReply)
+	}
+
+	// --- 2. 使用自定义的字符串 ID (高级模式) ---
+
 	// 生成一个 UUID 作为自定义 ID
 	traceID := uuid.New().String()
 	log.Printf("Using custom trace ID: %s", traceID)
 	// 使用新的 CallWithID 方法
-	err = client.CallWithID(traceID, "Arith.Add", addParams, &addReply)
+	err = client.CallWithID(traceID, "Arith.Add", addParams, &addReply, 5)
 	if err != nil {
 		log.Printf("FAILURE: Arith.Add with custom ID failed: %v", err)
 	} else {
 		log.Printf("SUCCESS: Arith.Add with custom ID reply: %d", addReply)
 	}
 
-	// --- 3. 再次使用默认的自增 ID，验证序列号继续增长 ---
-	log.Println("\n--- 3. Calling Arith.Ping again to check sequence ---")
-	err = client.Call("Arith.Ping", nil, &pingReply)
-	if err != nil {
-		log.Printf("Arith.Ping error: %v", err)
+	// --- 3. ping ---
+	if client.Ping() {
+		log.Println("Ping SUCCESS")
 	} else {
-		log.Printf("Arith.Ping reply: %s", pingReply)
+		log.Println("Ping FAILURE")
 	}
 }

@@ -131,14 +131,14 @@ func (c *Client) Go(method string, args, reply interface{}, done chan *Call) *Ca
 // CallWithID 发起一个同步调用，允许用户指定请求 ID。
 func (c *Client) CallWithID(id interface{}, method string, args, reply interface{}, timeout time.Duration) error {
 	// 默认超时时间
-	if timeout == 0 {
+	if timeout.Seconds() == 0 {
 		timeout = 5 * time.Second
 	}
 	call := c.GoWithID(id, method, args, reply, make(chan *Call, 1))
 	select {
 	case <-call.Done:
 		return call.Error
-	case <-time.After(timeout):
+	case <-time.After(timeout * time.Second):
 		return errors.New("jsonrpc2: call timeout")
 	}
 }
@@ -157,6 +157,21 @@ func (c *Client) GoWithID(id interface{}, method string, args, reply interface{}
 
 	c.send(id, call)
 	return call
+}
+
+// Ping 用于检测客户端连接是否仍然活跃。
+func (c *Client) Ping() bool {
+	var reply string // 期望收到 "pong"
+
+	err := c.Call("ping", nil, &reply, 5)
+	if err != nil {
+		return false
+	}
+	if reply == "pong" {
+		return true
+	}
+
+	return false
 }
 
 // send 是一个底层的发送函数，处理所有类型的 ID。
@@ -190,7 +205,7 @@ func (c *Client) send(id interface{}, call *Call) {
 		Jsonrpc: "2.0",
 		Method:  call.Method,
 		Params:  params,
-		ID:      id, // 使用传入的 ID
+		ID:      id,
 	}
 
 	c.sendMutex.Lock()
@@ -216,7 +231,9 @@ func idToKey(id interface{}) (string, error) {
 	case string:
 		return v, nil
 	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
-		return fmt.Sprintf("N:%d", v), nil
+		return fmt.Sprintf("%d", v), nil
+	case float32, float64:
+		return fmt.Sprintf("%.0f", v), nil // 优化点
 	default:
 		return "", fmt.Errorf("jsonrpc2: unsupported id type '%T' for map key", v)
 	}
